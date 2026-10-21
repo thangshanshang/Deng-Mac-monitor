@@ -1,6 +1,6 @@
 # AI 制作声明 / AI disclosure
 
-Mac性能监测邓眼瞎（英文名 DENG-monitor，应用名邓眼瞎）是在用户指导下借助 AI 制作的项目。
+Deng-Mac-monitor（英文应用名 DENG-monitor，应用名邓眼瞎）是在用户指导下借助 AI 制作的项目。
 
 - 主要 Swift / SwiftUI / AppKit 代码、ANE 计数器读取实现、构建脚本和项目说明，由 OpenAI Codex 辅助生成、修改和排查问题。
 - 应用图标通过 AI 图像生成工具制作，提示词与设计说明位于 `Support/Assets/Design.md`。

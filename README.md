@@ -1,10 +1,10 @@
-# Mac性能监测邓眼瞎
+# Deng-Mac-monitor
 
 <p align="center"><img src="Support/Assets/Silicon-icon.png" width="160" alt="邓眼瞎液态玻璃风格图标"></p>
 
 > **AI 制作声明**：本项目的主要代码、界面实现、构建脚本及项目说明由 OpenAI Codex 在用户指导下辅助生成和修改；应用图标使用 AI 图像生成工具制作。第三方组件和参考项目的作者及许可证单独列出。本项目为实验性工具，AI 辅助制作不代表 Apple 官方开发、认可或认证。
 
-英文名 **DENG-monitor**，应用名 **邓眼瞎**。应用面板保留 Silicon 标题。
+项目名 **Deng-Mac-monitor**，应用名 **邓眼瞎**，英文应用名 **DENG-monitor**。应用面板保留 Silicon 标题。
 
 一个简洁的 Apple Silicon Mac 菜单栏性能监测工具。使用原生 SwiftUI / AppKit，跟随系统浅色与深色外观。
 
@@ -35,7 +35,7 @@ Apple Silicon Mac。已在当前 macOS 26.3 机器上验证；其他系统版本
 
 ```sh
 brew install macmon
-./build.sh
+zsh build.sh
 open dist/邓眼瞎.app
 ```
 
