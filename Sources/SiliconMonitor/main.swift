@@ -14,6 +14,7 @@ struct Snapshot {
     var gpuPower: Double?
     var cpuTemp: Double?
     var gpuTemp: Double?
+    var systemPower: Double?
 }
 
 @MainActor final class Monitor: ObservableObject {
@@ -136,6 +137,7 @@ struct Snapshot {
         next.ane = n("ane_power")
         next.cpuPower = n("cpu_power")
         next.gpuPower = n("gpu_power")
+        next.systemPower = n("sys_power").flatMap { $0 >= 0 ? $0 : nil }
         if let memory = json["memory"] as? [String: Any] {
             next.memoryUsed = number(memory["ram_usage"])
             next.memoryTotal = number(memory["ram_total"])
@@ -162,6 +164,7 @@ struct Snapshot {
 
 func percent(_ value: Double?) -> String { value.map { String(format: "%.0f%%", $0 * 100) } ?? "—" }
 func watts(_ value: Double?) -> String { value.map { String(format: "%.2f W", $0) } ?? "—" }
+func systemWatts(_ value: Double?) -> String { value.map { String(format: "%.1f W", $0) } ?? "— W" }
 func bandwidth(_ value: Double?) -> String {
     guard let value else { return "—" }
     if value == 0 { return "0 MB/s" }
@@ -177,12 +180,13 @@ struct MetricRow: View {
     let detail: String
     var ratio: Double? = nil
     var tint: Color = .blue
+    var compact = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: compact ? 5 : 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title).font(.system(size: 13, weight: .medium))
                 Spacer()
-                Text(value).font(.system(size: 22, weight: .medium, design: .rounded)).monospacedDigit()
+                Text(value).font(.system(size: compact ? 19 : 22, weight: .medium, design: .rounded)).monospacedDigit()
             }
             if let ratio {
                 GeometryReader { geometry in
@@ -193,12 +197,14 @@ struct MetricRow: View {
                 }.frame(height: 3)
             }
             Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-        }.padding(.vertical, 12)
+        }.padding(.vertical, compact ? 8 : 12)
     }
 }
 
 struct Panel: View {
     @ObservedObject var monitor: Monitor
+    var compact = false
+    var onClose: (() -> Void)?
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -207,17 +213,26 @@ struct Panel: View {
                     Text(monitor.chip).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Circle().fill(monitor.updated == nil ? Color.orange : Color.green).frame(width: 6, height: 6)
-            }.padding(.bottom, 16)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(systemWatts(monitor.data.systemPower))
+                        .font(.system(size: compact ? 17 : 20, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text("整机总功耗").font(.system(size: 10)).foregroundStyle(.secondary)
+                }.help("系统传感器报告的整机功耗，不是 CPU、GPU 与 ANE 功耗相加。不可用时显示 — W。")
+                if let onClose {
+                    Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
+                        .buttonStyle(.plain).foregroundStyle(.secondary).padding(.leading, 4)
+                        .help("关闭面板（Esc）").accessibilityLabel("关闭面板")
+                }
+            }.padding(.bottom, compact ? 10 : 16)
             Divider()
-            MetricRow(title: "CPU", value: percent(monitor.data.cpu), detail: "\(watts(monitor.data.cpuPower))   ·   \(temperature(monitor.data.cpuTemp))", ratio: monitor.data.cpu, tint: .blue)
+            MetricRow(title: "CPU", value: percent(monitor.data.cpu), detail: "\(watts(monitor.data.cpuPower))   ·   \(temperature(monitor.data.cpuTemp))", ratio: monitor.data.cpu, tint: .blue, compact: compact)
             Divider()
-            MetricRow(title: "GPU", value: percent(monitor.data.gpu), detail: "活动率   ·   \(watts(monitor.data.gpuPower))   ·   \(temperature(monitor.data.gpuTemp))", ratio: monitor.data.gpu, tint: .teal)
+            MetricRow(title: "GPU", value: percent(monitor.data.gpu), detail: "活动率   ·   \(watts(monitor.data.gpuPower))   ·   \(temperature(monitor.data.gpuTemp))", ratio: monitor.data.gpu, tint: .teal, compact: compact)
             Divider()
-            MetricRow(title: "内存", value: percent(monitor.data.memory), detail: "\(gb(monitor.data.memoryUsed)) / \(gb(monitor.data.memoryTotal)) GB   ·   Swap \(gb(monitor.data.swap)) GB", ratio: monitor.data.memory, tint: .indigo)
+            MetricRow(title: "内存", value: percent(monitor.data.memory), detail: "\(gb(monitor.data.memoryUsed)) / \(gb(monitor.data.memoryTotal)) GB   ·   Swap \(gb(monitor.data.swap)) GB", ratio: monitor.data.memory, tint: .indigo, compact: compact)
             Divider()
             VStack(alignment: .leading, spacing: 8) {
-                MetricRow(title: "Neural Engine", value: bandwidth(monitor.aneMetrics.totalGBs), detail: monitor.aneMetrics.estimated ? "内存吞吐 · 估算" : "内存吞吐 · 读写合计")
+                MetricRow(title: "Neural Engine", value: bandwidth(monitor.aneMetrics.totalGBs), detail: monitor.aneMetrics.estimated ? "内存吞吐 · 估算" : "内存吞吐 · 读写合计", compact: compact)
                     .padding(.bottom, -8)
                 HStack {
                     Text("读 " + bandwidth(monitor.aneMetrics.readGBs))
@@ -230,67 +245,96 @@ struct Panel: View {
                     Spacer()
                     Text("功耗 " + watts(monitor.data.ane))
                 }.font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-            }.padding(.bottom, 14)
+            }.padding(.bottom, compact ? 10 : 14)
             Divider()
             HStack {
                 Text(monitor.status).font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("退出") { NSApp.terminate(nil) }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
-            }.padding(.top, 14)
+            }.padding(.top, compact ? 10 : 14)
         }
-        .padding(22)
-        .frame(width: 330)
+        .padding(compact ? 16 : 22)
+        .frame(width: compact ? 300 : 330)
         .background(.regularMaterial)
+    }
+}
+
+@MainActor final class MenuPanel: NSPanel {
+    var closeAction: (() -> Void)?
+    override var canBecomeKey: Bool { true }
+    override func cancelOperation(_ sender: Any?) { closeAction?() }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { closeAction?() } else { super.keyDown(with: event) }
     }
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     private let monitor = Monitor()
     private var statusItem: NSStatusItem!
-    private let popover = NSPopover()
+    private var menuPanel: MenuPanel?
     private var mainWindow: NSWindow?
     private var refresh: Timer?
+    private var globalClick: Any?
+    private var localClick: Any?
+    private var resignObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "cpu", accessibilityDescription: "Silicon 性能监测")
+            if let url = Bundle.main.url(forResource: "Silicon", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+                icon.size = NSSize(width: 18, height: 18)
+                icon.isTemplate = false
+                button.image = icon
+                NSApp.applicationIconImage = NSImage(contentsOf: url)
+            }
             button.imagePosition = .imageLeading
-            button.title = " —"
+            button.title = " — W"
             button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
             button.target = self
             button.action = #selector(toggle)
-            button.toolTip = "CPU 使用率 · 点击查看 GPU、内存与 ANE 功耗"
+            button.toolTip = "整机总功耗 · 点击展开或收起面板"
+            button.setAccessibilityLabel("邓眼瞎 整机功耗")
         }
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: Panel(monitor: monitor))
         monitor.start()
         refresh = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.statusItem.button?.title = " " + percent(self.monitor.data.cpu)
+                self.statusItem.button?.title = " " + systemWatts(self.monitor.data.systemPower)
             }
         }
         if !CommandLine.arguments.contains("--export-preview") || CommandLine.arguments.contains("--check-window") { showMainWindow() }
         if let flag = CommandLine.arguments.firstIndex(of: "--export-preview"), CommandLine.arguments.count > flag + 1 {
             let path = CommandLine.arguments[flag + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [self] in
-                let renderer = ImageRenderer(content: Panel(monitor: monitor).environment(\.colorScheme, .light))
+                let renderer = ImageRenderer(content: Panel(monitor: monitor, compact: true, onClose: {}).environment(\.colorScheme, .light))
                 renderer.scale = 2
                 if let image = renderer.cgImage {
                     let bitmap = NSBitmapImageRep(cgImage: image)
                     try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
                 }
-                print("Window check: visible=\(mainWindow?.isVisible ?? false), width=\(mainWindow?.frame.width ?? 0), height=\(mainWindow?.frame.height ?? 0)")
-                print("Live check: cpu=\(percent(monitor.data.cpu)), gpu=\(percent(monitor.data.gpu)), memory=\(percent(monitor.data.memory)), ane=\(watts(monitor.data.ane)), status=\(monitor.status)")
-                print("ANE check: activity=\(percent(monitor.aneMetrics.activity)), read=\(bandwidth(monitor.aneMetrics.readGBs)), write=\(bandwidth(monitor.aneMetrics.writeGBs)), total=\(bandwidth(monitor.aneMetrics.totalGBs)), estimated=\(monitor.aneMetrics.estimated)")
-                let valid = monitor.aneMetrics.totalGBs != nil && monitor.data.gpu != nil && monitor.data.memory != nil && monitor.data.ane != nil
+                // Verify the real menu panel's geometry and both toggle/Escape dismissal paths.
+                mainWindow?.orderOut(nil)
+                showMenuPanel()
+                let firstVisible = menuPanel?.isVisible == true
+                let size = menuPanel?.frame.size ?? .zero
+                let fits = menuPanel.map { panel in panel.screen.map { $0.visibleFrame.contains(panel.frame) } ?? false } ?? false
+                toggle()
+                let toggledClosed = menuPanel?.isVisible == false
+                showMenuPanel()
+                menuPanel?.cancelOperation(nil)
+                let escapeClosed = menuPanel?.isVisible == false
+                print("Menu check: visible=\(firstVisible), width=\(size.width), height=\(size.height), fitsScreen=\(fits), toggleClosed=\(toggledClosed), escapeClosed=\(escapeClosed)")
+                print("Power check: system=\(systemWatts(monitor.data.systemPower)), menu=\(statusItem.button?.title ?? ""), icon=\(statusItem.button?.image != nil)")
+                let valid = firstVisible && fits && toggledClosed && escapeClosed && size.width == 300 && size.height < 500 && monitor.data.systemPower != nil
                 monitor.stop()
                 exit(valid ? 0 : 1)
             }
         }
     }
+
     private func showMainWindow() {
+        hideMenuPanel()
         if mainWindow == nil {
             let controller = NSHostingController(rootView: Panel(monitor: monitor))
             let window = NSWindow(contentViewController: controller)
@@ -311,14 +355,78 @@ struct Panel: View {
         return true
     }
     @objc private func toggle() {
-        guard let button = statusItem.button else { return }
-        if popover.isShown { popover.performClose(nil) }
-        else {
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        if menuPanel?.isVisible == true { hideMenuPanel() } else { showMenuPanel() }
+    }
+    private func showMenuPanel() {
+        guard let button = statusItem.button, let statusWindow = button.window else { return }
+        if menuPanel == nil {
+            let controller = NSHostingController(rootView: Panel(monitor: monitor, compact: true, onClose: { [weak self] in self?.hideMenuPanel() }))
+            let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.contentViewController = controller
+            panel.setContentSize(controller.view.fittingSize)
+            panel.isReleasedWhenClosed = false
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.level = .popUpMenu
+            panel.hidesOnDeactivate = false
+            panel.contentView?.wantsLayer = true
+            panel.contentView?.layer?.cornerRadius = 12
+            panel.contentView?.layer?.masksToBounds = true
+            panel.closeAction = { [weak self] in self?.hideMenuPanel() }
+            menuPanel = panel
+        }
+        guard let panel = menuPanel else { return }
+        let anchor = statusWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let screen = NSScreen.screens.first { $0.frame.intersects(anchor) } ?? statusWindow.screen ?? NSScreen.main
+        guard let screen else { return }
+        let visible = screen.visibleFrame.insetBy(dx: 8, dy: 8)
+        let size = panel.frame.size
+        let x = min(max(anchor.maxX - size.width, visible.minX), visible.maxX - size.width)
+        let y = min(max(anchor.minY - size.height - 7, visible.minY), visible.maxY - size.height)
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        installDismissal()
+    }
+    private func installDismissal() {
+        removeDismissal()
+        globalClick = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in self?.hideMenuPanel() }
+        }
+        localClick = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            let swallow = MainActor.assumeIsolated {
+                guard let self else { return false }
+                if event.type == .keyDown, event.keyCode == 53, self.menuPanel?.isVisible == true {
+                    self.hideMenuPanel()
+                    return true
+                }
+                if event.type != .keyDown, event.window !== self.menuPanel, event.window !== self.statusItem.button?.window { self.hideMenuPanel() }
+                return false
+            }
+            return swallow ? nil : event
+        }
+        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.hideMenuPanel() }
         }
     }
-    func applicationWillTerminate(_ notification: Notification) { monitor.stop() }
+    private func hideMenuPanel() {
+        menuPanel?.orderOut(nil)
+        removeDismissal()
+    }
+    private func removeDismissal() {
+        if let globalClick { NSEvent.removeMonitor(globalClick) }
+        if let localClick { NSEvent.removeMonitor(localClick) }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        globalClick = nil
+        localClick = nil
+        resignObserver = nil
+    }
+    func applicationWillTerminate(_ notification: Notification) {
+        refresh?.invalidate()
+        removeDismissal()
+        monitor.stop()
+    }
 }
 
 let application = NSApplication.shared
