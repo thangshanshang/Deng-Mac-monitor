@@ -22,23 +22,43 @@
 
 每秒采样。断开时清除过期的采集器数据并自动重试，缺失的指标显示 `—`。ANE 字节计数直接在应用内读取，不依赖 macmon；系统睡眠或采样间隔超过 5 秒时重新建立基线，避免把长时平均值当成实时速率。
 
-## 运行条件
+## 下载与运行条件
 
-Apple Silicon Mac。已在当前 macOS 26.3 机器上验证；其他系统版本未验证。应用打包包含 macmon，不需要另装 Homebrew，也不需要管理员密码。macmon 使用私有系统接口，系统更新后可能需要适配。
+- 仅支持 **Apple Silicon（M 系列）Mac**，不支持 Intel Mac、Windows 或鸿蒙。
+- [现有 v1.3.0 发布包](https://github.com/thangshanshang/Deng-Mac-monitor/releases/tag/v1.3.0) 的主程序实际最低部署版本为 **macOS 26.0**。该包的 Info.plist 写有 14.0，但不能据此在 macOS 14/15 上运行；这是旧构建脚本未固定编译目标造成的，当前源码已修正。
+- 当前源码明确以 **macOS 14.0** 为最低部署目标；这表示编译目标，不代表完成了所有系统和芯片的兼容性测试。目前只在 **M4 / macOS 26.3** 上实测，旧系统和其他芯片的采集通道仍需验证。
+- 发布包已内置 macmon，使用者无需安装 Homebrew、Xcode 或 Swift。正常采集无需 sudo 或管理员密码；安装开发工具和系统安全确认可能需要认证。
 
-应用只读取本机指标，没有网络上报、开机启动或历史数据存储。采集器会随应用退出。当前应用采用本机临时签名，没有 Apple 公证，适合本机使用。
+下载 Release 中的 `Deng-Mac-monitor-v1.3.0-macOS-arm64.zip`（不要选择 Source code），解压后将 `邓眼瞎.app` 拖入“应用程序”再打开。应用采用 ad-hoc 临时签名，**没有 Developer ID 签名和 Apple 公证**，从网上下载后可能被 Gatekeeper 拦截。请先核对下载来源；若系统允许，可按 Apple 的[安全打开 Mac App 说明](https://support.apple.com/zh-cn/102445)在“系统设置 → 隐私与安全性”中处理，或自行从源码构建。无需关闭系统整体安全保护。
 
-## 构建
+本项目及 macmon 使用私有 IOReport / 系统传感器接口，系统更新后可能需要适配；缺失的指标显示 `—` 或“不可用”。应用只读取本机指标，没有网络上报、开机启动或历史数据存储。采集器会随应用退出。
 
-需要 Apple Silicon Mac、Xcode Command Line Tools（或 Xcode）和 Homebrew。先安装采集器，再构建：
+## 从源码构建
+
+构建需要：
+
+- Apple Silicon Mac，使用原生 arm64 终端，不使用 Rosetta。
+- 提供 **Swift 6.x** 和 macOS SDK 的 Xcode Command Line Tools 或完整 Xcode；仅安装旧版命令行工具不够。工具链自身可能要求比部署目标更高的 macOS 版本，请以对应 Xcode/CLT 的系统要求为准。
+- [Homebrew](https://brew.sh/) 和通过它安装的 `macmon`。构建脚本同时打包其二进制与 Homebrew 安装目录中的 `LICENSE`，仅复制一个 macmon 可执行文件到 PATH 不够。当前验证的采集器版本为 **macmon 0.10.0**；未来版本需重新确认输出字段和兼容性。
+
+未安装开发工具时，先运行 `xcode-select --install` 并完成系统安装提示；安装 Homebrew 后，再执行：
 
 ```sh
+# 应显示 Swift 6.x；若版本不符，先更新或选择正确的开发工具
+xcrun swiftc --version
+
 brew install macmon
+macmon --version
+
+git clone https://github.com/thangshanshang/Deng-Mac-monitor.git
+cd Deng-Mac-monitor
 zsh build.sh
-open dist/邓眼瞎.app
+open "dist/邓眼瞎.app"
 ```
 
-输出到 `dist/邓眼瞎.app`，采集器及图标均随应用打包。
+若下载的是源码 ZIP，先解压并在终端进入包含 `build.sh` 的项目目录，再执行最后两条命令。输出为 `dist/邓眼瞎.app`，采集器、图标及第三方许可证均随应用打包，不需要服务器或额外部署服务。构建不需要 Apple 付费开发者账号。
+
+`swift build -c release` 只构建 Swift Package 可执行文件，**不会生成完整 .app 或打包 macmon、图标和许可证**；普通安装请使用 `zsh build.sh`。构建脚本固定 `arm64-apple-macosx14.0` 并写入一致的最低系统版本。实际兼容性还取决于所用 Swift 工具链及打包的 macmon；修改部署目标不能代替旧系统实测。
 
 ## 第三方与 AI 素材
 

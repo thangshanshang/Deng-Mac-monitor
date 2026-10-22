@@ -1,17 +1,27 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
+if [[ "$(uname -m)" != arm64 ]]; then
+    print '请在 Apple Silicon Mac 的原生终端中构建（不支持 Intel 或 Rosetta 终端）。'
+    exit 1
+fi
+xcrun --find swiftc >/dev/null
+SWIFT_VERSION="$(xcrun swiftc --version)"
+if [[ "$SWIFT_VERSION" != *"Swift version "[6-9].* ]]; then
+    print '需要 Swift 6.x 工具链，请安装或选择包含 Swift 6 的 Xcode / Command Line Tools。'
+    exit 1
+fi
 BUILD_DIR="${TMPDIR:-/tmp}/deng-monitor-build"
 APP="${DENG_APP_PATH:-dist/邓眼瞎.app}"
-mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -swift-version 6 -module-cache-path "$BUILD_DIR/module-cache" -o "$APP/Contents/MacOS/DENG-monitor" -import-objc-header Support/CIOReport/include/IOReport.h -Xlinker -undefined -Xlinker dynamic_lookup Sources/SiliconMonitor/*.swift
 MACMON="$(command -v macmon || true)"
 if [[ -z "$MACMON" && -x /opt/homebrew/bin/macmon ]]; then MACMON=/opt/homebrew/bin/macmon; fi
 if [[ -z "$MACMON" ]]; then print '请先安装采集器：brew install macmon'; exit 1; fi
-if [[ -f "$APP/Contents/Resources/macmon" ]]; then chmod u+w "$APP/Contents/Resources/macmon"; fi
-cp "$MACMON" "$APP/Contents/Resources/macmon"
 MACMON_LICENSE="${MACMON:A:h:h}/LICENSE"
 if [[ ! -f "$MACMON_LICENSE" ]]; then print '未找到 macmon 的许可证，请使用 Homebrew 安装 macmon 后重试。'; exit 1; fi
+mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources"
+xcrun swiftc -O -swift-version 6 -target arm64-apple-macosx14.0 -module-cache-path "$BUILD_DIR/module-cache" -o "$APP/Contents/MacOS/DENG-monitor" -import-objc-header Support/CIOReport/include/IOReport.h -Xlinker -undefined -Xlinker dynamic_lookup Sources/SiliconMonitor/*.swift
+if [[ -f "$APP/Contents/Resources/macmon" ]]; then chmod u+w "$APP/Contents/Resources/macmon"; fi
+cp "$MACMON" "$APP/Contents/Resources/macmon"
 cp "$MACMON_LICENSE" "$APP/Contents/Resources/macmon-LICENSE"
 cp Support/SiliconScope-LICENSE "$APP/Contents/Resources/SiliconScope-LICENSE"
 cp Support/Assets/Silicon.icns "$APP/Contents/Resources/Silicon.icns"
