@@ -4,7 +4,7 @@
 
 > **AI 制作声明**：本项目的主要代码、界面实现、构建脚本及项目说明由 OpenAI Codex 在用户指导下辅助生成和修改；应用图标使用 AI 图像生成工具制作。第三方组件和参考项目的作者及许可证单独列出。本项目为实验性工具。
 
-一个简洁的 Apple Silicon Mac 菜单栏性能监测工具。使用原生 SwiftUI / AppKit，跟随系统浅色与深色外观。
+一个简洁的 Apple Silicon Mac 菜单栏性能监测工具。使用原生 SwiftUI / AppKit，跟随系统浅色与深色外观。macOS 26 使用系统原生 Liquid Glass，旧系统回退为磨砂材质；开启“减少透明度”时使用实色背景，保证读数清晰。
 
 ## 使用
 
@@ -38,7 +38,7 @@
 构建需要：
 
 - Apple Silicon Mac，使用原生 arm64 终端，不使用 Rosetta。
-- 提供 **Swift 6.x** 和 macOS SDK 的 Xcode Command Line Tools 或完整 Xcode；仅安装旧版命令行工具不够。工具链自身可能要求比部署目标更高的 macOS 版本，请以对应 Xcode/CLT 的系统要求为准。
+- 提供 **Swift 6.x 和 macOS 26 SDK** 的 Xcode Command Line Tools 或完整 Xcode（Xcode 26 或对应命令行工具）；仅安装旧版命令行工具不够。工具链自身可能要求比部署目标更高的 macOS 版本，请以对应 Xcode/CLT 的系统要求为准。
 - [Homebrew](https://brew.sh/) 和通过它安装的 `macmon`。构建脚本同时打包其二进制与 Homebrew 安装目录中的 `LICENSE`，仅复制一个 macmon 可执行文件到 PATH 不够。当前验证的采集器版本为 **macmon 0.10.0**；未来版本需重新确认输出字段和兼容性。
 
 未安装开发工具时，先运行 `xcode-select --install` 并完成系统安装提示；安装 Homebrew 后，再执行：
@@ -67,6 +67,10 @@ open "dist/邓眼瞎.app"
 ANE 通道映射参考 [SiliconScope](https://github.com/kennss/SiliconScope)，MIT 许可证保存在源码 Support/SiliconScope-LICENSE 和应用 Contents/Resources/SiliconScope-LICENSE。
 
 图标的 AI 生成说明和提示词见 [Design.md](Support/Assets/Design.md)。上述 AI 声明不改变第三方代码及组件的原有版权和许可证。
+
+## 源码新增：液态玻璃
+
+窗口与菜单栏面板采用一整块圆角玻璃表面，保留简洁的数据布局、整机功耗和原有收起操作。macOS 26 使用 SwiftUI 原生 `glassEffect`；macOS 14/15 回退为磨砂材质（尚未实机验证）。现有 v1.3.0 Release 不包含此界面更新，请从当前源码构建。
 
 ## 1.3.0 改进
 
