@@ -201,6 +201,27 @@ struct MetricRow: View {
     }
 }
 
+// One continuous glass surface keeps the metrics readable and avoids stacked glass.
+struct MonitorGlass: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    @ViewBuilder func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+        if reduceTransparency {
+            content.background(Color(nsColor: .windowBackgroundColor), in: shape)
+        } else if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content
+                .background(.regularMaterial, in: shape)
+                .overlay {
+                    shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                }
+        }
+    }
+}
+
 struct Panel: View {
     @ObservedObject var monitor: Monitor
     var compact = false
@@ -255,7 +276,7 @@ struct Panel: View {
         }
         .padding(compact ? 16 : 22)
         .frame(width: compact ? 300 : 330)
-        .background(.regularMaterial)
+        .modifier(MonitorGlass())
     }
 }
 
@@ -342,6 +363,9 @@ struct Panel: View {
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
             window.titlebarAppearsTransparent = true
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = true
             window.setContentSize(controller.view.fittingSize)
             window.center()
             mainWindow = window
@@ -371,7 +395,7 @@ struct Panel: View {
             panel.level = .popUpMenu
             panel.hidesOnDeactivate = false
             panel.contentView?.wantsLayer = true
-            panel.contentView?.layer?.cornerRadius = 12
+            panel.contentView?.layer?.cornerRadius = 24
             panel.contentView?.layer?.masksToBounds = true
             panel.closeAction = { [weak self] in self?.hideMenuPanel() }
             menuPanel = panel
