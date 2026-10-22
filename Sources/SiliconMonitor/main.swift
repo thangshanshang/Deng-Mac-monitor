@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import Darwin
 
-struct Snapshot {
+struct Snapshot: Equatable {
     var cpu: Double?
     var gpu: Double?
     var memory: Double?
@@ -15,14 +15,34 @@ struct Snapshot {
     var cpuTemp: Double?
     var gpuTemp: Double?
     var systemPower: Double?
+    var aneMetrics = ANEReading()
 }
 
 @MainActor final class Monitor: ObservableObject {
     @Published var data = Snapshot()
-    @Published var aneMetrics = ANEReading()
+    var aneMetrics: ANEReading { data.aneMetrics }
+    private var latest = Snapshot()
+    private var panelsVisible = false
+    var onSystemPower: ((Double?) -> Void)?
+
+    func setPanelsVisible(_ visible: Bool) {
+        guard panelsVisible != visible else { return }
+        panelsVisible = visible
+        if visible {
+            _ = sampleCPU()
+            latest.aneMetrics = aneHardware?.sample() ?? ANEReading()
+            if data != latest { data = latest }
+        }
+    }
+
+    private func clearCollectorData() {
+        latest = Snapshot(cpu: latest.cpu)
+        if panelsVisible { data = latest }
+        onSystemPower?(nil)
+    }
     private var aneHardware: ANEHardware?
     @Published var status = "正在连接采集器"
-    @Published var updated: Date?
+    private var updated: Date?
     private var process: Process?
     private var timer: Timer?
     private var lastCPU: [UInt64]?
@@ -39,24 +59,23 @@ struct Snapshot {
 
     func start() {
         aneHardware = ANEHardware()
-        sampleCPU()
+        _ = sampleCPU()
         launchCollector()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.sampleCPU()
-                self.aneMetrics = self.aneHardware?.sample() ?? ANEReading()
                 if self.process == nil && Date() > self.retryAt { self.launchCollector() }
                 if self.process != nil && Date().timeIntervalSince(self.updated ?? self.startedAt) > 8 {
-                    self.data = Snapshot(cpu: self.data.cpu)
+                    self.clearCollectorData()
                     self.status = "采集暂无响应 · 正在重连"
                     self.process?.terminate()
                 }
             }
         }
+        timer?.tolerance = 0.2
     }
 
-    private func sampleCPU() {
+    private func sampleCPU() -> Double? {
         var info = host_cpu_load_info()
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &info) {
@@ -64,13 +83,13 @@ struct Snapshot {
                 host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return }
+        guard result == KERN_SUCCESS else { return nil }
         let ticks = [UInt64(info.cpu_ticks.0), UInt64(info.cpu_ticks.1), UInt64(info.cpu_ticks.2), UInt64(info.cpu_ticks.3)]
         defer { lastCPU = ticks }
-        guard let previous = lastCPU, zip(ticks, previous).allSatisfy({ $0 >= $1 }) else { return }
+        guard let previous = lastCPU, zip(ticks, previous).allSatisfy({ $0 >= $1 }) else { return nil }
         let delta = zip(ticks, previous).map { $0 - $1 }
         let total = delta.reduce(0, +)
-        if total > 0 { data.cpu = 1 - Double(delta[2]) / Double(total) }
+        return total > 0 ? 1 - Double(delta[2]) / Double(total) : nil
     }
 
     private func launchCollector() {
@@ -89,7 +108,10 @@ struct Snapshot {
         pending.removeAll()
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
+            guard !chunk.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
             Task { @MainActor in self?.receive(chunk) }
         }
         child.terminationHandler = { [weak self] _ in
@@ -97,7 +119,7 @@ struct Snapshot {
             Task { @MainActor in
                 guard let self else { return }
                 self.process = nil
-                self.data = Snapshot(cpu: self.data.cpu)
+                self.clearCollectorData()
                 self.status = "采集已断开 · 正在重连"
                 self.retryAt = Date().addingTimeInterval(4)
             }
@@ -109,6 +131,7 @@ struct Snapshot {
             updated = nil
             status = "正在采样"
         } catch {
+            output.fileHandleForReading.readabilityHandler = nil
             status = "采集器无法启动"
             retryAt = Date().addingTimeInterval(10)
         }
@@ -132,7 +155,11 @@ struct Snapshot {
         }
         func n(_ key: String) -> Double? { number(json[key]) }
         func ratio(_ key: String) -> Double? { n(key).map { min(1, max(0, $0)) } }
-        var next = Snapshot(cpu: data.cpu)
+        var next = Snapshot(cpu: latest.cpu)
+        if panelsVisible {
+            next.cpu = sampleCPU() ?? latest.cpu
+            next.aneMetrics = aneHardware?.sample() ?? ANEReading()
+        }
         next.gpu = ratio("gpu_active_ratio")
         next.ane = n("ane_power")
         next.cpuPower = n("cpu_power")
@@ -150,9 +177,11 @@ struct Snapshot {
             next.cpuTemp = number(temp["cpu_temp_avg"])
             next.gpuTemp = number(temp["gpu_temp_avg"])
         }
-        data = next
+        latest = next
+        if panelsVisible, data != next { data = next }
+        onSystemPower?(next.systemPower)
         updated = Date()
-        status = "实时监测 · 每秒更新"
+        if status != "实时监测 · 每秒更新" { status = "实时监测 · 每秒更新" }
     }
 
     func stop() {
@@ -179,6 +208,7 @@ struct MetricRow: View {
     let value: String
     let detail: String
     var ratio: Double? = nil
+    var showsProgress = true
     var tint: Color = .blue
     var compact = false
     var body: some View {
@@ -188,11 +218,11 @@ struct MetricRow: View {
                 Spacer()
                 Text(value).font(.system(size: compact ? 19 : 22, weight: .medium, design: .rounded)).monospacedDigit()
             }
-            if let ratio {
+            if showsProgress {
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color.primary.opacity(0.07))
-                        Capsule().fill(tint.opacity(0.8)).frame(width: geometry.size.width * min(1, max(0, ratio)))
+                        Capsule().fill(tint.opacity(0.8)).frame(width: geometry.size.width * min(1, max(0, ratio ?? 0)))
                     }
                 }.frame(height: 3)
             }
@@ -201,37 +231,169 @@ struct MetricRow: View {
     }
 }
 
-// One continuous glass surface keeps the metrics readable and avoids stacked glass.
-struct MonitorGlass: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+@MainActor final class AppearanceSettings: ObservableObject {
+    static let shared = AppearanceSettings()
+    @Published var liquidGlass: Bool {
+        didSet {
+            UserDefaults.standard.set(liquidGlass, forKey: "appearance.liquidGlass")
+            onChange?()
+        }
+    }
+    @Published var showOwnership: Bool {
+        didSet {
+            UserDefaults.standard.set(showOwnership, forKey: "appearance.showOwnership")
+            onChange?()
+        }
+    }
+    @Published var transparentSwitch: Bool {
+        didSet {
+            UserDefaults.standard.set(transparentSwitch, forKey: "appearance.transparentSwitch")
+            onChange?()
+        }
+    }
+    var onChange: (() -> Void)?
+    private init() {
+        let defaults = UserDefaults.standard
+        liquidGlass = defaults.object(forKey: "appearance.liquidGlass") as? Bool ?? true
+        showOwnership = defaults.object(forKey: "appearance.showOwnership") as? Bool ?? true
+        transparentSwitch = defaults.object(forKey: "appearance.transparentSwitch") as? Bool ?? true
+    }
+}
 
-    @ViewBuilder func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
-        if reduceTransparency {
-            content.background(Color(nsColor: .windowBackgroundColor), in: shape)
-        } else if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
+// Neutral glass styling with native Toggle semantics and standard keyboard activation.
+struct GlassSwitchButtonStyle: ButtonStyle {
+    let isOn: Bool
+    let transparentTrack: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+
+    @ViewBuilder private var thumb: some View {
+        if #available(macOS 26.0, *) {
+            Capsule()
+                .fill(.white.opacity(colorScheme == .dark ? 0.12 : 0.36))
+                .glassEffect(.clear, in: Capsule())
         } else {
-            content
-                .background(.regularMaterial, in: shape)
+            Capsule().fill(.regularMaterial)
+        }
+    }
+    func makeBody(configuration: Configuration) -> some View {
+        ZStack {
+            Capsule()
+                .fill(isOn ? (transparentTrack ? Color.primary.opacity(0.12) : Color.blue.opacity(0.88)) : Color.primary.opacity(0.055))
                 .overlay {
-                    shape.strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
-                        .allowsHitTesting(false)
+                    Capsule().strokeBorder(.white.opacity(isOn ? 0.48 : 0.24), lineWidth: 0.5)
                 }
+            thumb
+                .frame(width: configuration.isPressed ? 25 : 21, height: 16)
+                .phaseAnimator([1.0, 1.28, 0.94, 1.0], trigger: isOn) { content, phase in
+                    content.scaleEffect(x: reduceMotion ? 1 : phase, y: reduceMotion ? 1 : 1 / sqrt(phase))
+                } animation: { _ in
+                    reduceMotion ? .linear(duration: 0) : .spring(response: 0.18, dampingFraction: 0.65)
+                }
+                .shadow(color: .black.opacity(0.14), radius: 1.5, y: 1)
+                .offset(x: isOn ? 9 : -9)
+        }
+        .frame(width: 44, height: 20)
+        .contentShape(Capsule())
+        .scaleEffect(configuration.isPressed ? 1.025 : 1)
+        .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.62), value: isOn)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+struct NeutralGlassToggleStyle: ToggleStyle {
+    let transparentTrack: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            Color.clear.frame(width: 44, height: 20)
+        }
+        .buttonStyle(GlassSwitchButtonStyle(isOn: configuration.isOn, transparentTrack: transparentTrack))
+        .accessibilityRepresentation {
+            Toggle("液态玻璃效果", isOn: configuration.$isOn).toggleStyle(.switch)
         }
     }
 }
 
+struct GlassToggle: View {
+    @ObservedObject var settings = AppearanceSettings.shared
+    var body: some View {
+        Toggle("液态玻璃效果", isOn: $settings.liquidGlass)
+            .labelsHidden().toggleStyle(NeutralGlassToggleStyle(transparentTrack: settings.transparentSwitch))
+            .help("液态玻璃效果：开启使用原生玻璃，关闭使用磨砂")
+    }
+}
+
+// One active native surface: switching materials never retains both glass backings.
+@MainActor final class GlassPanelController: NSViewController {
+    final class MetricsHost: NSHostingView<Panel> {
+        override var mouseDownCanMoveWindow: Bool { true }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+    let preferredSize: NSSize
+    private let host: MetricsHost
+    private var surface: NSView?
+    private(set) var usingLiquidGlass = false
+    init(panel: Panel, titlebar: Bool = false) {
+        var panel = panel
+        panel.titlebar = titlebar
+        host = MetricsHost(rootView: panel)
+        host.safeAreaRegions = []
+        preferredSize = host.fittingSize
+        super.init(nibName: nil, bundle: nil)
+        view = NSView(frame: NSRect(origin: .zero, size: preferredSize))
+        host.frame = view.bounds
+        host.autoresizingMask = [.width, .height]
+        applyAppearance()
+    }
+    func applyAppearance() {
+        let enabled = AppearanceSettings.shared.liquidGlass
+        if surface != nil, usingLiquidGlass == enabled { return }
+        if #available(macOS 26.0, *), let glass = surface as? NSGlassEffectView {
+            glass.contentView = nil
+        }
+        host.removeFromSuperview()
+        surface?.removeFromSuperview()
+        let bounds = view.bounds
+        if #available(macOS 26.0, *), enabled {
+            let glass = NSGlassEffectView(frame: bounds)
+            glass.style = .clear
+            glass.cornerRadius = 24
+            glass.contentView = host
+            surface = glass
+            usingLiquidGlass = true
+        } else {
+            let material = NSVisualEffectView(frame: bounds)
+            material.material = .popover
+            material.blendingMode = .behindWindow
+            material.state = .active
+            material.wantsLayer = true
+            material.layer?.cornerRadius = 24
+            material.layer?.masksToBounds = true
+            material.addSubview(host)
+            surface = material
+            usingLiquidGlass = false
+        }
+        host.frame = bounds
+        if let surface {
+            surface.autoresizingMask = [.width, .height]
+            view.addSubview(surface)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
 struct Panel: View {
     @ObservedObject var monitor: Monitor
+    @ObservedObject private var settings = AppearanceSettings.shared
     var compact = false
+    var titlebar = false
     var onClose: (() -> Void)?
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Silicon").font(.system(size: 20, weight: .semibold))
-                    Text(monitor.chip).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(monitor.chip).font(.system(size: 11)).foregroundStyle(.secondary).help(monitor.status)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 3) {
@@ -253,7 +415,7 @@ struct Panel: View {
             MetricRow(title: "内存", value: percent(monitor.data.memory), detail: "\(gb(monitor.data.memoryUsed)) / \(gb(monitor.data.memoryTotal)) GB   ·   Swap \(gb(monitor.data.swap)) GB", ratio: monitor.data.memory, tint: .indigo, compact: compact)
             Divider()
             VStack(alignment: .leading, spacing: 8) {
-                MetricRow(title: "Neural Engine", value: bandwidth(monitor.aneMetrics.totalGBs), detail: monitor.aneMetrics.estimated ? "内存吞吐 · 估算" : "内存吞吐 · 读写合计", compact: compact)
+                MetricRow(title: "Neural Engine", value: bandwidth(monitor.aneMetrics.totalGBs), detail: monitor.aneMetrics.estimated ? "内存吞吐 · 估算" : "内存吞吐 · 读写合计", showsProgress: false, compact: compact)
                     .padding(.bottom, -8)
                 HStack {
                     Text("读 " + bandwidth(monitor.aneMetrics.readGBs))
@@ -266,17 +428,24 @@ struct Panel: View {
                     Spacer()
                     Text("功耗 " + watts(monitor.data.ane))
                 }.font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-            }.padding(.bottom, compact ? 10 : 14)
-            Divider()
-            HStack {
-                Text(monitor.status).font(.system(size: 10)).foregroundStyle(.secondary)
-                Spacer()
-                Button("退出") { NSApp.terminate(nil) }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
-            }.padding(.top, compact ? 10 : 14)
+            }
+            HStack(spacing: 6) {
+                GlassToggle()
+                Text("液态玻璃效果").font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if settings.showOwnership {
+                    Text("@太行山上").font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: 22)
+            .padding(.top, 8)
         }
-        .padding(compact ? 16 : 22)
+        .padding(.horizontal, compact ? 16 : 22)
+        .padding(.top, (compact ? 16 : 18) + (titlebar ? 28 : 0))
+        .padding(.bottom, 16)
         .frame(width: compact ? 300 : 330)
-        .modifier(MonitorGlass())
+        .fixedSize(horizontal: false, vertical: true)
+
     }
 }
 
@@ -289,15 +458,17 @@ struct Panel: View {
     }
 }
 
-@MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let monitor = Monitor()
     private var statusItem: NSStatusItem!
     private var menuPanel: MenuPanel?
     private var mainWindow: NSWindow?
-    private var refresh: Timer?
     private var globalClick: Any?
     private var localClick: Any?
     private var resignObserver: NSObjectProtocol?
+    private var glassMenuItem: NSMenuItem!
+    private var ownershipMenuItem: NSMenuItem!
+    private var switchColorMenuItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -317,17 +488,44 @@ struct Panel: View {
             button.toolTip = "整机总功耗 · 点击展开或收起面板"
             button.setAccessibilityLabel("邓眼瞎 整机功耗")
         }
-        monitor.start()
-        refresh = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.statusItem.button?.title = " " + systemWatts(self.monitor.data.systemPower)
-            }
+        let menu = NSMenu()
+        let applicationItem = NSMenuItem()
+        menu.addItem(applicationItem)
+        let applicationMenu = NSMenu()
+        let show = NSMenuItem(title: "显示监测窗口", action: #selector(revealWindow), keyEquivalent: "1")
+        show.target = self
+        applicationMenu.addItem(show)
+        applicationMenu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出邓眼瞎", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        applicationMenu.addItem(quit)
+        applicationItem.submenu = applicationMenu
+        let settingsItem = NSMenuItem(title: "设置", action: nil, keyEquivalent: "")
+        let settingsMenu = NSMenu(title: "设置")
+        glassMenuItem = NSMenuItem(title: "液态玻璃效果", action: #selector(toggleGlass), keyEquivalent: "")
+        switchColorMenuItem = NSMenuItem(title: "透明开关底色", action: #selector(toggleSwitchColor), keyEquivalent: "")
+        switchColorMenuItem.target = self
+        ownershipMenuItem = NSMenuItem(title: "显示所有权", action: #selector(toggleOwnership), keyEquivalent: "")
+        glassMenuItem.target = self
+        ownershipMenuItem.target = self
+        settingsMenu.addItem(glassMenuItem)
+        settingsMenu.addItem(switchColorMenuItem)
+        settingsMenu.addItem(ownershipMenuItem)
+        settingsItem.submenu = settingsMenu
+        menu.addItem(settingsItem)
+        NSApp.mainMenu = menu
+        AppearanceSettings.shared.onChange = { [weak self] in self?.applyAppearanceSettings() }
+        applyAppearanceSettings()
+        monitor.onSystemPower = { [weak self] power in
+            guard let button = self?.statusItem.button else { return }
+            let title = " " + systemWatts(power)
+            if button.title != title { button.title = title }
         }
+        monitor.start()
         if !CommandLine.arguments.contains("--export-preview") || CommandLine.arguments.contains("--check-window") { showMainWindow() }
         if let flag = CommandLine.arguments.firstIndex(of: "--export-preview"), CommandLine.arguments.count > flag + 1 {
             let path = CommandLine.arguments[flag + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [self] in
+                monitor.setPanelsVisible(true)
                 let renderer = ImageRenderer(content: Panel(monitor: monitor, compact: true, onClose: {}).environment(\.colorScheme, .light))
                 renderer.scale = 2
                 if let image = renderer.cgImage {
@@ -341,10 +539,10 @@ struct Panel: View {
                 let size = menuPanel?.frame.size ?? .zero
                 let fits = menuPanel.map { panel in panel.screen.map { $0.visibleFrame.contains(panel.frame) } ?? false } ?? false
                 toggle()
-                let toggledClosed = menuPanel?.isVisible == false
+                let toggledClosed = menuPanel == nil
                 showMenuPanel()
                 menuPanel?.cancelOperation(nil)
-                let escapeClosed = menuPanel?.isVisible == false
+                let escapeClosed = menuPanel == nil
                 print("Menu check: visible=\(firstVisible), width=\(size.width), height=\(size.height), fitsScreen=\(fits), toggleClosed=\(toggledClosed), escapeClosed=\(escapeClosed)")
                 print("Power check: system=\(systemWatts(monitor.data.systemPower)), menu=\(statusItem.button?.title ?? ""), icon=\(statusItem.button?.image != nil)")
                 let valid = firstVisible && fits && toggledClosed && escapeClosed && size.width == 300 && size.height < 500 && monitor.data.systemPower != nil
@@ -357,46 +555,66 @@ struct Panel: View {
     private func showMainWindow() {
         hideMenuPanel()
         if mainWindow == nil {
-            let controller = NSHostingController(rootView: Panel(monitor: monitor))
+            let controller = GlassPanelController(panel: Panel(monitor: monitor), titlebar: true)
             let window = NSWindow(contentViewController: controller)
             window.title = "Silicon"
-            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.delegate = self
+            window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
             window.isReleasedWhenClosed = false
             window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
             window.isOpaque = false
             window.backgroundColor = .clear
             window.hasShadow = true
-            window.setContentSize(controller.view.fittingSize)
+            window.setFrame(NSRect(origin: .zero, size: controller.preferredSize), display: false)
             window.center()
             mainWindow = window
         }
         mainWindow?.deminiaturize(nil)
         mainWindow?.makeKeyAndOrderFront(nil)
+        updateVisibility()
         NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showMainWindow()
         return true
     }
+    @objc private func toggleGlass() {
+        AppearanceSettings.shared.liquidGlass.toggle()
+    }
+    @objc private func toggleSwitchColor() {
+        AppearanceSettings.shared.transparentSwitch.toggle()
+    }
+    @objc private func toggleOwnership() {
+        AppearanceSettings.shared.showOwnership.toggle()
+    }
+    private func applyAppearanceSettings() {
+        let settings = AppearanceSettings.shared
+        glassMenuItem?.state = settings.liquidGlass ? .on : .off
+        ownershipMenuItem?.state = settings.showOwnership ? .on : .off
+        switchColorMenuItem?.state = settings.transparentSwitch ? .on : .off
+        (mainWindow?.contentViewController as? GlassPanelController)?.applyAppearance()
+        (menuPanel?.contentViewController as? GlassPanelController)?.applyAppearance()
+    }
+    @objc private func revealWindow() { showMainWindow() }
     @objc private func toggle() {
         if menuPanel?.isVisible == true { hideMenuPanel() } else { showMenuPanel() }
     }
     private func showMenuPanel() {
         guard let button = statusItem.button, let statusWindow = button.window else { return }
         if menuPanel == nil {
-            let controller = NSHostingController(rootView: Panel(monitor: monitor, compact: true, onClose: { [weak self] in self?.hideMenuPanel() }))
-            let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            let controller = GlassPanelController(panel: Panel(monitor: monitor, compact: true, onClose: { [weak self] in self?.hideMenuPanel() }))
+            let panel = MenuPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
             panel.contentViewController = controller
-            panel.setContentSize(controller.view.fittingSize)
+            panel.setContentSize(controller.preferredSize)
             panel.isReleasedWhenClosed = false
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = true
             panel.level = .popUpMenu
             panel.hidesOnDeactivate = false
-            panel.contentView?.wantsLayer = true
-            panel.contentView?.layer?.cornerRadius = 24
-            panel.contentView?.layer?.masksToBounds = true
+            panel.becomesKeyOnlyIfNeeded = false
             panel.closeAction = { [weak self] in self?.hideMenuPanel() }
             menuPanel = panel
         }
@@ -409,8 +627,9 @@ struct Panel: View {
         let x = min(max(anchor.maxX - size.width, visible.minX), visible.maxX - size.width)
         let y = min(max(anchor.minY - size.height - 7, visible.minY), visible.maxY - size.height)
         panel.setFrameOrigin(NSPoint(x: x, y: y))
-        panel.orderFrontRegardless()
-        panel.makeKey()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        updateVisibility()
         installDismissal()
     }
     private func installDismissal() {
@@ -437,6 +656,8 @@ struct Panel: View {
     private func hideMenuPanel() {
         menuPanel?.orderOut(nil)
         removeDismissal()
+        menuPanel = nil
+        updateVisibility()
     }
     private func removeDismissal() {
         if let globalClick { NSEvent.removeMonitor(globalClick) }
@@ -446,8 +667,20 @@ struct Panel: View {
         localClick = nil
         resignObserver = nil
     }
+    private func updateVisibility() {
+        let mainVisible = mainWindow.map { $0.isVisible && !$0.isMiniaturized } ?? false
+        monitor.setPanelsVisible(mainVisible || menuPanel?.isVisible == true)
+    }
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === mainWindow {
+            mainWindow = nil
+            updateVisibility()
+        }
+    }
+    func windowDidMiniaturize(_ notification: Notification) { updateVisibility() }
+    func windowDidDeminiaturize(_ notification: Notification) { updateVisibility() }
+
     func applicationWillTerminate(_ notification: Notification) {
-        refresh?.invalidate()
         removeDismissal()
         monitor.stop()
     }

@@ -5,7 +5,7 @@ import CIOReport
 #endif
 
 // Channel mapping researched with SiliconScope (MIT); see bundled acknowledgement.
-struct ANEReading {
+struct ANEReading: Equatable {
     var activity: Double?
     var readGBs: Double?
     var writeGBs: Double?
